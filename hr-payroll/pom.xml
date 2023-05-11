@@ -9,14 +9,15 @@
 		<relativePath/> <!-- lookup parent from repository -->
 	</parent>
 	<groupId>com.devsuperior</groupId>
-	<artifactId>hr-payrool</artifactId>
+	<artifactId>hr-payroll</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
-	<name>hr-payrool</name>
+	<name>hr-payroll</name>
 	<description>Payroll Microservice</description>
+
 	<properties>
 		<java.version>11</java.version>
-		<spring-cloud.version>Hoxton.SR12</spring-cloud.version>
 	</properties>
+
 	<dependencies>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -38,6 +39,22 @@
 			<groupId>org.springframework.cloud</groupId>
 			<artifactId>spring-cloud-starter-openfeign</artifactId>
 		</dependency>
+		<dependency>
+			<groupId>org.springframework.cloud</groupId>
+			<artifactId>spring-cloud-starter-netflix-ribbon</artifactId>
+		</dependency>
+		<!-- <dependency>
+			<groupId>org.springframework.cloud</groupId>
+			<artifactId>
+				spring-cloud-starter-netflix-eureka-client
+			</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.cloud</groupId>
+			<artifactId>
+				spring-cloud-starter-netflix-hystrix
+			</artifactId>
+		</dependency>-->
 	</dependencies>
 
 	<build>
@@ -54,7 +71,7 @@
 			<dependency>
 				<groupId>org.springframework.cloud</groupId>
 				<artifactId>spring-cloud-dependencies</artifactId>
-				<version>${spring-cloud.version}</version>
+				<version>Hoxton.SR8</version>
 				<type>pom</type>
 				<scope>import</scope>
 			</dependency>
