@@ -1,0 +1,506 @@
+package com.sysdata.coadquirencia
+
+
+import com.sysdata.trava.*
+import com.sysdata.util.Util
+
+class ProcessamentoDiarioGtmService extends ProcessamentoDiarioBaseService {
+    def unidadeRecebivelService
+    def corteArranjoPagamentoService
+    def agendamentoCAPLoteSerialService
+    def grailsApplication
+    def corteArranjoPagamentoFranquiaService
+    def icptService
+    def conciliacaoVendaRedeService
+    def agendamentoAReceberRedeService
+    def cercAP002Service
+    def liberado=true
+    def conciliacaoFinanceiraRedeService
+    def processamentoAborted =false
+    def processamentoProcessing =false
+
+    def canProcess() {
+        def skipESitef=grailsApplication.config.coadquirencia.processamento.esitef.skip
+        (liberado && !processado && fepasProcessado  && (getESitefProcessado() || skipESitef) && !processamentoProcessing && !processamentoAborted && grailsApplication.config.coadquirencia.processamento.diario.active)
+    }
+    def getProcessado() {
+        existsProcessamento(TipoProcessamento.PROCESSAMENTO_DIARIO_GTM)
+    }
+
+    def getFinalizado() {
+        processamentoEfetuado(TipoProcessamento.PROCESSAMENTO_DIARIO_GTM)
+    }
+
+    def processar(Boolean force=false) {
+        if (canProcess() || force) {
+            processamentoProcessing = true
+            def proc
+            Processamento.withTransaction {
+                proc = new Processamento(tipo: TipoProcessamento.PROCESSAMENTO_DIARIO_GTM)
+                proc.descricao = "Processamento Diario"
+                proc.distribuido = false
+                proc.status = StatusProcessamento.PROCESSANDO
+                proc.progresso = 0
+                proc.save(flush: true)
+            }
+            log.debug "Processando CAP..."
+            try {
+                agendamentoCAPLoteSerialService.processar()
+            } catch (Exception e) {
+                log.debug Util.stackTraceToString(e)
+                proc.attach()
+                proc.endTime = new Date()
+                proc.status = StatusProcessamento.ERRO
+                proc.save(flush: true)
+                processamentoAborted = true
+                processamentoProcessing = false
+                return false
+            }
+
+            Processamento.withTransaction {
+                proc.attach()
+                proc.progresso = 20
+                proc.save(flush: true)
+            }
+
+            if (calendarioService.ehDiaUtil(new Date())) {
+//                try {
+//                    Processamento.withTransaction {
+//                        corteFIDC()
+//                        log.debug "Corte fidc"
+//                    }
+//                    Processamento.withTransaction {
+//                        proc.attach()
+//                        proc.progresso = 50
+//                        proc.save(flush: true)
+//                    }
+//                } catch (Exception e) {
+//                    log.debug Util.stackTraceToString(e)
+//                    Processamento.withTransaction {
+//                        proc.attach()
+//                        proc.endTime = new Date()
+//                        proc.status = StatusProcessamento.ERRO
+//                        proc.save(flush: true)
+//                        processamentoAborted = true
+//                        processamentoProcessing = false
+//                        return false
+//                    }
+//                }
+
+
+                def data = Util.truncDate(new Date())
+                log.debug "Processando corte $data"
+                try {
+                    Processamento.withTransaction {
+                        log.debug "Corte CIP Debito..."
+                        corteArranjoPagamentoFranquiaService.processarCorteCipDebito()
+                    }
+                    Processamento.withTransaction {
+                        proc.attach()
+                        proc.progresso = 30
+                        proc.save(flush: true)
+                    }
+                } catch (Exception e) {
+                    log.debug Util.stackTraceToString(e)
+                    Processamento.withTransaction {
+                        proc.attach()
+                        proc.endTime = new Date()
+                        proc.status = StatusProcessamento.ERRO
+                        proc.save(flush: true)
+                        processamentoAborted = true
+                        processamentoProcessing = false
+                        return false
+                    }
+                }
+                try {
+                    Processamento.withTransaction {
+                        log.debug "Corte CIP Credito desativado..."
+                        corteArranjoPagamentoFranquiaService.processarCorteCipCredito()
+                    }
+                    Processamento.withTransaction {
+                        proc.attach()
+                        proc.progresso = 40
+                        proc.save(flush: true)
+                    }
+                } catch (Exception e) {
+                    log.debug Util.stackTraceToString(e)
+                    Processamento.withTransaction {
+                        proc.attach()
+                        proc.endTime = new Date()
+                        proc.status = StatusProcessamento.ERRO
+                        proc.save(flush: true)
+                        processamentoAborted = true
+                        processamentoProcessing = false
+                        return false
+                    }
+                }
+                try {
+                    Processamento.withTransaction {
+                        log.debug "Corte FIDC desativado"
+                        corteFIDC()
+                    }
+                    Processamento.withTransaction {
+                        proc.attach()
+                        proc.progresso = 50
+                        proc.save(flush: true)
+                    }
+                } catch (Exception e) {
+                    log.debug Util.stackTraceToString(e)
+                    Processamento.withTransaction {
+                        proc.attach()
+                        proc.endTime = new Date()
+                        proc.status = StatusProcessamento.ERRO
+                        proc.save(flush: true)
+                        processamentoAborted = true
+                        processamentoProcessing = false
+                        return false
+                    }
+                }
+                try {
+                    Processamento.withTransaction {
+                        log.debug "Corte banc desativado"
+                        corteArranjoPagamentoFranquiaService.processarCorteBanco()
+                        log.debug "Corte banco finalizado!"
+                    }
+                    Processamento.withTransaction {
+                        proc.attach()
+                        proc.progresso = 60
+                        proc.save(flush: true)
+                    }
+                } catch (Exception e) {
+                    log.debug Util.stackTraceToString(e)
+                    Processamento.withTransaction {
+                        proc.attach()
+                        proc.endTime = new Date()
+                        proc.status = StatusProcessamento.ERRO
+                        proc.save(flush: true)
+                        processamentoAborted = true
+                        processamentoProcessing = false
+                        return false
+                    }
+                }
+            } else {
+                log.debug "Corte nao executado - nao é dia util"
+            }
+
+            try {
+                Processamento.withTransaction {
+                    log.debug "Gerando URs futuras..."
+                    gerarURsFuturas()
+                }
+                Processamento.withTransaction {
+                    proc.attach()
+                    proc.progresso = 70
+                    proc.save(flush: true)
+                }
+            } catch (Exception e) {
+                log.debug Util.stackTraceToString(e)
+                Processamento.withTransaction {
+                    proc.attach()
+                    proc.endTime = new Date()
+                    proc.status = StatusProcessamento.ERRO
+                    proc.save(flush: true)
+                    processamentoAborted = true
+                    processamentoProcessing = false
+                    return false
+                }
+            }
+
+            try {
+                Processamento.withTransaction {
+                    log.debug "Gerando AP002..."
+                    gerarAP002()
+                }
+                Processamento.withTransaction {
+                    proc.attach()
+                    proc.progresso = 80
+                    proc.save(flush: true)
+                }
+            } catch (Exception e) {
+                log.debug Util.stackTraceToString(e)
+                Processamento.withTransaction {
+                    proc.attach()
+                    proc.endTime = new Date()
+                    proc.status = StatusProcessamento.ERRO
+                    proc.save(flush: true)
+                    processamentoAborted = true
+                    processamentoProcessing = false
+                    return false
+                }
+            }
+
+
+            processarIcpt()
+            Processamento.withTransaction {
+                proc.attach()
+                proc.progresso = 100
+                proc.endTime = new Date()
+                proc.status = StatusProcessamento.PROCESSADO
+                proc.save(flush: true)
+            }
+            processamentoProcessing = false
+        }
+    }
+
+    def gerarURsFuturas() {
+        def data=new Date().clearTime()+1
+        def dataReferencia = corteArranjoPagamentoService.getDataCorteCredito(data)+1
+        log.debug "Gerando URS a partir de: $dataReferencia"
+        def lurs=unidadeRecebivelService.processarLancamentosPendentes()
+        unidadeRecebivelService.processarUnidadesRecebiveis(lurs)
+        lurs.each {uid->
+            def u=UnidadeRecebivel.get uid
+            println u
+        }
+        log.debug 'DONE'
+    }
+    def gerarAP002(){
+        log.debug "Obtendo URs..."
+        def lur=UnidadeRecebivel.executeQuery("""
+select u.id
+from UnidadeRecebivel u
+where u.merchant.tipoMerchant='LOJA_FRANQUIA'
+and u.merchant.codigo<>'FIDC'
+and u.statusAtualizacao='PENDENTE'
+""")
+        log.debug "${lur.size()} UR's"
+        def a = cercAP002Service.gerarArquivo(lur)
+        if (a) {
+            log.debug "Enviando arquivo $a..."
+            cercAP002Service.enviarArquivo(a)
+        }
+        log.debug 'DONE'
+    }
+
+    def processarIcpt() {
+        def pIcpt
+        Processamento.withTransaction {
+            pIcpt = new Processamento(tipo: TipoProcessamento.PROCESSAMENTO_ICPT)
+            pIcpt.descricao = "Processamento Diario ICPT ${new Date().format('dd/MM/yyyy')}"
+            pIcpt.distribuido = false
+            pIcpt.status = StatusProcessamento.PROCESSANDO
+            pIcpt.progresso = 0
+            pIcpt.save(flush: true)
+        }
+        log.debug "Processando ICPT ..."
+
+        def firstDay=isFirstDay()
+
+        icptService.processarTransacoes()
+        Processamento.withTransaction {
+            pIcpt.attach()
+            pIcpt.progresso = firstDay ? 30 : 60
+            pIcpt.save(flush: true)
+        }
+
+        icptService.processarCancelamentos()
+
+        Processamento.withTransaction {
+            pIcpt.attach()
+            pIcpt.progresso = firstDay ? 40 : 100
+            pIcpt.save(flush: true)
+        }
+
+        if (isFirstDay()) {
+            def ref=icptService.referencia
+            log.debug "Efetuando Fechamento ICPT ${ref.mes}/${ref.ano}..."
+            icptService.consolidarMes(ref.mes,ref.ano)
+        }
+        Processamento.withTransaction {
+            pIcpt.attach()
+            pIcpt.progresso = 100
+            pIcpt.endTime = new Date()
+            pIcpt.status= StatusProcessamento.PROCESSADO
+            pIcpt.save(flush: true)
+        }
+
+    }
+    Boolean isFirstDay(Date d=new Date()) {
+        Date data= Util.truncDate(d)
+        def cal = new GregorianCalendar()
+        cal.setTime(data)
+        def dia = cal.get(Calendar.DAY_OF_MONTH)
+        if (dia==1) {
+            def mesAtual=cal.get(Calendar.MONTH)+1
+            def anoAtual=cal.get(Calendar.YEAR)
+            def ref = icptService.referencia
+            if ((mesAtual==1 && ref.mes==12 && ref.ano==(anoAtual-1))
+                    || (mesAtual>1 && ref.mes==(mesAtual-1) && ref.ano==anoAtual)) {
+                return true
+            } else {
+                throw new RuntimeException("Erro ao validar 1o dia do mes [$ref.mes/$ref.ano]")
+                return false
+            }
+        } else return false
+
+    }
+    def getStepSubadquirencia() {
+        existsProcessamento(TipoProcessamento.PROCESSAMENTO_DIARIO_ETAPA_SUB)
+    }
+    def stepSubProcessing=false
+    def stepSubAborted=true				// Desabilitacao processamento SUB durante migracao do CERC
+
+    def canProcessSubadquirencia() {
+        !stepSubadquirencia && !stepSubAborted && !stepSubProcessing && grailsApplication.config.processamento.job.processamentoDiarioSub.active
+
+    }
+    def processarSubadquirencia(force=false) {
+        if(canProcessSubadquirencia() || force) {
+            stepSubProcessing = true
+            def pSub
+            Processamento.withTransaction {
+                pSub = new Processamento(tipo: TipoProcessamento.PROCESSAMENTO_DIARIO_ETAPA_SUB)
+                pSub.descricao = "Etapa Subadquirencia Pos Corte"
+                pSub.distribuido = false
+                pSub.status = StatusProcessamento.PROCESSANDO
+                pSub.progresso = 0
+                pSub.save(flush: true)
+            }
+
+            log.debug "Agendamento CAR Rede..."
+            agendamentoAReceberRedeService.processar()
+            Processamento.withTransaction {
+                pSub.attach()
+                pSub.progresso = 30
+                pSub.save(flush: true)
+            }
+            log.debug "Validando taxas Rede..."
+            conciliacaoVendaRedeService.conciliarResumosVenda()
+            Processamento.withTransaction {
+                pSub.attach()
+                pSub.progresso = 50
+                pSub.save(flush: true)
+            }
+            log.info "Processando Desagendamento Rede..."
+            conciliacaoVendaRedeService.conciliarDesagendamentos()
+            Processamento.withTransaction {
+                pSub.attach()
+                pSub.progresso = 60
+                pSub.save(flush: true)
+            }
+            log.debug "Conciliaçao Financeira Rede..."
+            if (grailsApplication.config.coadquirencia.processamento.conciliacao.financeira.rede.credito)
+                conciliacaoFinanceiraRedeService.conciliarLancamentosCredito()
+            else log.debug "Conciliacao Financeira Rede - Creditos - DESABILIDATA"
+            if (grailsApplication.config.coadquirencia.processamento.conciliacao.financeira.rede.cancelamento)
+                conciliacaoFinanceiraRedeService.conciliarCancelamentos()
+            else log.debug "Conciliacao Financeira Rede - Cancelamento - DESABILIDATA"
+            Processamento.withTransaction {
+                pSub.attach()
+                pSub.progresso = 100
+                pSub.endTime = new Date()
+                pSub.status= StatusProcessamento.PROCESSADO
+                pSub.save(flush: true)
+            }
+            stepSubProcessing = false
+        }
+    }
+
+
+    def canProcessCorteFidc() {
+        if (processandoCorteFidc) return false
+        if (!calendarioService.ehDiaUtil(new Date())) return false
+        Date d=Util.truncDate(new Date())
+        List<Processamento> p=Processamento.createCriteria().list {
+            eq('data',d)
+            eq('identificacao','corte.fidc')
+            eq('tipo',TipoProcessamento.CORTE_CAP)
+        }
+        if (p) return false
+        return true
+    }
+    Boolean processandoCorteFidc=false
+    def corteTroncoAgrupadoService
+    def processarCorteReembolsoFidc(force=false) {
+        if (canProcessCorteFidc() || force) {
+            processandoCorteFidc=true
+            def data = Util.truncDate(new Date())
+            log.debug "Processando corte FIDC $data ..."
+            corteTroncoAgrupadoService.parametrosCorte = ['lojas': ['FIDC']]
+            corteTroncoAgrupadoService.processarBanco(data,'corte.fidc')
+            corteTroncoAgrupadoService.parametrosCorte = [:]
+            processandoCorteFidc=false
+            log.debug("Baixando URs Fidc...")
+            baixarURFidc()
+        }
+    }
+
+    def baixaURFidcService
+
+    void baixarURFidc() {
+        Processamento.withTransaction {
+            Date data = new Date().clearTime()
+            log.debug "Obtendo URs [${data}] ..."
+            List<Long> lu = UnidadeRecebivel.executeQuery("""select u.id
+from UnidadeRecebivel u
+where u.secundario=true and u.titular.cnpj='26142862000142' and u.merchant.codigo='FIDC'
+and u.status<>'BAIXADO' and u.status<>'DESCARTADO' and u.status<>'INATIVO'
+and u.statusAtualizacao<>'ERRO_INTERNO'
+and u.dataLiquidacao<=:data
+and not exists (select l from LancamentoResumoVenda l where l.unidadeRecebivel=u and l.statusLancamento<>'BAIXADO')
+order by u.dataLiquidacao
+""", [data: data])
+            log.debug "${lu.size()} urs encontradas => $lu"
+            def resp = baixaURFidcService.processarURs(lu)
+            log.debug resp
+            log.debug "Processamento Baixa UR FIDC terminado"
+        }
+    }
+
+    def corteFIDC(){
+            //Variaveis
+            def lu
+
+            //Corte FIDC
+            log.debug "Iniciando corte"
+            Processamento.withTransaction { s ->
+                Date data = new Date().clearTime()
+                corteTroncoAgrupadoService.liberado = true
+                corteTroncoAgrupadoService.parametrosCorte = ['lojas': ['FIDC']]
+                corteTroncoAgrupadoService.processarBanco(data, 'corte.fidc')
+                corteTroncoAgrupadoService.parametrosCorte = [:]
+            }
+            log.debug "Primeira etapa do corte finalizada"
+
+            //Baixa URs FIDC
+            log.debug "Iniciando baixa de URs"
+            Processamento.withTransaction { s ->
+                baixaURFidcService.processar()
+            }
+            log.debug "Finalizado baixa de URs"
+
+            //Gerando arquivo AP002 de URs baixadas
+            log.debug "Iniciando geracao do AP002 para URs baixadas!"
+            Processamento.withTransaction { s ->
+                lu = UnidadeRecebivel.executeQuery("""select u.id from UnidadeRecebivel u
+		where u.secundario=true and u.status='BAIXADO' and u.dataLiquidacao<=:data 
+		and u.statusAtualizacao='PENDENTE'""", [data: new Date().clearTime()])
+                if (lu) {
+                    def a = cercAP002Service.gerarArquivo(lu)
+                    if (a) {
+                        log.debug "Enviando arquivo AP002 URs baixadas $a..."
+                        //cercAP002Service.enviarArquivo(a)
+                    }
+                } else log.debug "Sem URs baixadas..."
+            }
+            log.debug "Finalizado geracao do AP002 para URs baixadas!"
+
+            //Gerando AP002 de URs nao liquidadas
+            log.debug "Iniciando geracao do AP002 para URs nao liquidadas!"
+            Processamento.withTransaction { s ->
+                lu = UnidadeRecebivel.executeQuery("""select u.id from UnidadeRecebivel u
+		where u.secundario=true and u.dataLiquidacao>:data
+		and u.statusAtualizacao='PENDENTE'""", [data: new Date().clearTime()])
+                if (lu) {
+                    unidadeRecebivelService.processarUnidadesRecebiveis(lu)
+                    def a = cercAP002Service.gerarArquivo(lu)
+                    if (a) {
+                        log.debug "Enviando arquivo AP002 de URs nao liquidadas $a..."
+                        //cercAP002Service.enviarArquivo(a)
+                    }
+                } else log.debug "Nenhuma UR para atualizar..."
+            }
+            log.debug "Finalizado geracao do AP002 para URs nao liquidadas!"
+            log.debug "Corte FIDC finalizado"
+    }
+}
