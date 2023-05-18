@@ -1,5 +1,7 @@
 package com.devsuperior.hruser.entities;
 
+import org.springframework.beans.factory.annotation.Value;
+
 import javax.persistence.*;
 import java.io.Serializable;
 import java.util.HashSet;
@@ -10,6 +12,8 @@ import java.util.Set;
 @Table(name = "tb_user")
 public class User implements Serializable {
     private static final long serialVersionUID = 1L;
+
+
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
