@@ -5,10 +5,13 @@ import com.devsuperior.hroauth.feignclients.UserFeignClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.stereotype.Service;
 
 @Service
-public class UserService {
+public class UserService implements UserDetailsService {
 
     @Autowired
     private UserFeignClient userFeignClient;
@@ -22,6 +25,17 @@ public class UserService {
             throw new IllegalArgumentException("Email nao encontrado");
         }
         log.info("Email found: " + email);
+        return user;
+    }
+
+    @Override
+    public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+        User user = userFeignClient.findByEmail(username).getBody();
+        if (user == null){
+            log.error("Email nao encontrado: " + username);
+            throw new IllegalArgumentException("Email nao encontrado");
+        }
+        log.info("Email found: " + username);
         return user;
     }
 }
